@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://content/catalog.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+buildings = {
+"source": {"price": 60, "capacity": 2, "interval": 10, "input": "", "output": "iron_ore"},
+"belt": {"price": 5, "capacity": 2, "interval": 5},
+"splitter": {"price": 30, "capacity": 2, "interval": 5},
+"smelter": {"price": 140, "capacity": 4, "interval": 1, "recipe": "iron_plate"},
+"press": {"price": 180, "capacity": 4, "interval": 1, "recipe": "component"},
+"storage": {"price": 80, "capacity": 32, "interval": 5},
+"delivery": {"price": 60, "capacity": 64, "interval": 0}
+}
+recipes = {
+"iron_plate": {"input": "iron_ore", "input_count": 1, "output": "iron_plate", "output_count": 1, "ticks": 20, "power": 4},
+"component": {"input": "iron_plate", "input_count": 2, "output": "component", "output_count": 1, "ticks": 30, "power": 6}
+}
+orders = Array[Dictionary]([
+{"id": "O1", "title": "First shipment", "requirements": {"iron_plate": 12, "component": 0}, "reward": 200},
+{"id": "O2", "title": "Shared supply", "requirements": {"iron_plate": 12, "component": 12}, "reward": 260},
+{"id": "O3", "title": "Component contract", "requirements": {"iron_plate": 0, "component": 30}, "reward": 400}
+])
+power = {"capacity": 10, "upgrade_cost": 240, "upgrade_gain": 4}
+maintenance = {"wear_limit": 1200, "warning_at": 900, "repair_ticks": 100, "repair_cost": 40}
