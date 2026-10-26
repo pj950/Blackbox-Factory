@@ -12,15 +12,11 @@ static func create(mode: String = "plate") -> Factory:
 		model.wear_enabled = true
 	if mode in ["empty", "contract"]:
 		return model
-	model.place("source", Vector2i(2, 7))
-	model.place("smelter", Vector2i(6, 7))
-	model.place("delivery", Vector2i(18, 7))
+	for entry: Dictionary in Factory.CATALOG.starter_layout:
+		model.place(entry.kind, entry.cell, entry.facing)
 	if mode != "plate":
+		model.remove(Vector2i(12, 7))
 		model.place("press", Vector2i(12, 7))
-	for column: int in range(3, 18):
-		var cell := Vector2i(column, 7)
-		if not model.cells.has(cell):
-			model.place("belt", cell)
 	if expanded:
 		model.remove(Vector2i(3, 7))
 		model.place("splitter", Vector2i(3, 7))

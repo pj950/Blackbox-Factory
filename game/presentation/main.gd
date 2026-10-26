@@ -4,6 +4,7 @@ const Factory = preload("res://simulation/factory.gd")
 const Fixtures = preload("res://simulation/fixtures.gd")
 const Board = preload("res://presentation/board.gd")
 const SaveStore = preload("res://persistence/save_store.gd")
+const Feedback = preload("res://presentation/feedback.gd")
 const ATLAS = preload("res://assets/factory_tiles.svg")
 const MODES: Array[String] = ["plate", "component", "double", "empty", "contract", "double_limited", "maintenance"]
 const ITEMS: Array[String] = ["iron_ore", "iron_plate", "component"]
@@ -45,13 +46,24 @@ var load_save_button: Button
 var load_dialog: ConfirmationDialog
 var repair_button: Button
 var maintenance_label: Label
+var exit_dialog: ConfirmationDialog
+var feedback: Feedback
+var sound_button: Button
+var settings_path: String = "user://preferences.cfg"
+var plan_toggle: CheckButton
 
 
 func _ready() -> void:
+	get_tree().auto_accept_quit = false
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	feedback = Feedback.new()
+	feedback.settings_path = settings_path
+	add_child(feedback)
 	_build_theme()
 	_build_ui()
 	_load_fixture()
+	if feedback.settings_error != OK:
+		message_label.text = "Audio preferences could not be loaded; sound defaults to on."
 
 
 func _style(background: Color, border: Color) -> StyleBoxFlat:
@@ -128,8 +140,13 @@ func _build_ui() -> void:
 	var title: Label = _label("BLACKBOX / FACTORY", 25)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
-	mode_label = _label("M2  /  CONTRACTS", 13, Color("acc7b1"))
+	mode_label = _label("M3  /  CONTRACTS", 13, Color("acc7b1"))
 	header.add_child(mode_label)
+	sound_button = _button("", 16, "Sound on / off")
+	sound_button.toggle_mode = true
+	sound_button.set_pressed_no_signal(feedback.sound_enabled)
+	sound_button.toggled.connect(_set_sound)
+	header.add_child(sound_button)
 	save_button = _button("", 13, "Save and pause (F5)")
 	save_button.pressed.connect(_save_current)
 	header.add_child(save_button)
@@ -172,6 +189,19 @@ func _build_ui() -> void:
 	tools.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sidebar.add_child(tools)
 	tools.add_child(_label("BUILD", 13, Color("a4b2ad")))
+	plan_toggle = CheckButton.new()
+	var starter_cost: int = 0
+	for entry: Dictionary in Factory.CATALOG.starter_layout:
+		starter_cost += int(Factory.CATALOG.buildings[entry.kind].price)
+	plan_toggle.text = "O1 layout / %d" % starter_cost
+	plan_toggle.tooltip_text = "Show the optional first-shipment layout. Ghosts are not built or purchased."
+	plan_toggle.button_pressed = true
+	plan_toggle.toggled.connect(func(enabled: bool) -> void:
+		board.show_starter_layout = enabled
+		board._update_tooltip()
+		board.queue_redraw()
+	)
+	tools.add_child(plan_toggle)
 	var grid := GridContainer.new()
 	grid.columns = 2
 	tools.add_child(grid)
@@ -269,21 +299,55 @@ func _build_ui() -> void:
 	load_dialog.dialog_text = "Replace the current factory with the saved state? Unsaved changes will be lost."
 	load_dialog.confirmed.connect(_load_saved)
 	add_child(load_dialog)
+	exit_dialog = ConfirmationDialog.new()
+	exit_dialog.title = "End factory shift"
+	exit_dialog.dialog_text = "Save the current factory before exiting?"
+	exit_dialog.ok_button_text = "Save and exit"
+	exit_dialog.dialog_hide_on_ok = false
+	exit_dialog.add_button("Exit without saving", false, "discard")
+	exit_dialog.confirmed.connect(_save_and_exit)
+	exit_dialog.custom_action.connect(func(action: StringName) -> void:
+		if action == "discard":
+			_quit_game()
+	)
+	add_child(exit_dialog)
 
 
-func _save_current() -> void:
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and is_instance_valid(exit_dialog):
+		reset_dialog.hide()
+		load_dialog.hide()
+		exit_dialog.dialog_text = "Save the current factory before exiting?"
+		exit_dialog.popup_centered()
+
+
+func _quit_game() -> void:
+	get_tree().quit()
+
+
+func _save_and_exit() -> void:
+	if _save_current():
+		_quit_game()
+	else:
+		exit_dialog.dialog_text = message_label.text + "\nThe factory is still open."
+
+
+func _save_current() -> bool:
 	if not model.pending_commands.is_empty():
 		model.step()
 	running = false
 	var result: Dictionary = save_store.save_game(model, save_path)
 	message_label.text = "Save failed: " + str(result.error) if result.has("error") else "Saved. Simulation paused."
+	feedback.cue("error" if result.has("error") else "save")
 	_refresh()
+	return not result.has("error")
 
 
 func _load_saved() -> void:
 	var result: Dictionary = save_store.load_game(save_path)
 	if result.has("error"):
 		message_label.text = "Load failed: " + str(result.error)
+		feedback.cue("error")
 		return
 	model = result.model
 	board.model = model
@@ -296,11 +360,20 @@ func _load_saved() -> void:
 	message_label.text = "Recovered previous save from backup. Paused." if result.recovered else "Loaded saved factory. Paused."
 	if result.get("migrated", false):
 		message_label.text += " Version 1 migrated; original wear-free rules retained."
+	feedback.cue("save")
+	_refresh()
+
+
+func _set_sound(enabled: bool) -> void:
+	if feedback.set_sound_enabled(enabled) != OK:
+		message_label.text = "Sound changed for this session; preferences could not be saved."
+	if enabled:
+		feedback.cue("command")
 	_refresh()
 
 
 func _modal_open() -> bool:
-	return reset_dialog.visible or load_dialog.visible
+	return reset_dialog.visible or load_dialog.visible or exit_dialog.visible
 
 
 func _load_fixture() -> void:
@@ -321,6 +394,7 @@ func _select_tool(kind: String) -> void:
 	for button_kind: String in build_buttons:
 		build_buttons[button_kind].set_pressed_no_signal(button_kind == kind)
 	board.tool = kind
+	board._update_tooltip()
 	board.queue_redraw()
 
 
@@ -333,9 +407,11 @@ func _process(delta: float) -> void:
 		var completed: Dictionary = model.order_history.back()
 		message_label.text = "%s completed. +%d credits." % [completed.id, completed.reward]
 		reported_orders = model.order_history.size()
+		feedback.cue("order")
 	if not model.command_errors.is_empty():
 		message_label.text = model.command_errors.back()
 		model.command_errors.clear()
+		feedback.cue("error")
 	_refresh()
 
 
@@ -343,9 +419,11 @@ func _dispatch(command: Dictionary) -> void:
 	if running:
 		model.pending_commands.append(command.duplicate(true))
 		message_label.text = "Queued for next tick."
+		feedback.cue("queued")
 	else:
 		var error: String = model.execute_command(command)
 		message_label.text = error if not error.is_empty() else "Updated."
+		feedback.cue("error" if not error.is_empty() else ("repair" if command.action == "repair" else "command"))
 	_refresh()
 
 
@@ -388,6 +466,9 @@ func _set_storage(index: int) -> void:
 
 
 func _refresh() -> void:
+	plan_toggle.visible = model.contracts_enabled and model.order_index == 0
+	sound_button.icon = _icon(16 if feedback.sound_enabled else 17)
+	sound_button.tooltip_text = "Sound on; click to mute" if feedback.sound_enabled else "Sound muted; click to enable"
 	var completed: bool = model.contracts_enabled and model.current_order().is_empty()
 	if completed:
 		running = false
@@ -412,6 +493,7 @@ func _refresh() -> void:
 	facing_label.text = DIRECTIONS[build_facing]
 	board.facing = build_facing
 	board.selected = selected
+	board._update_tooltip()
 	var has_selection: bool = model.cells.has(selected)
 	enabled_toggle.visible = has_selection
 	storage_menu.visible = has_selection and model.cells[selected].kind == "storage"

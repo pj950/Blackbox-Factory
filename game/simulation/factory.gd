@@ -395,6 +395,22 @@ func _accepts(building: Dictionary, item: String, incoming_side: int) -> bool:
 	return item == recipe_for(building).input
 
 
+func input_items(building: Dictionary, incoming_side: int) -> Array[String]:
+	var items: Array[String] = []
+	for item: String in ["iron_ore", "iron_plate", "component"]:
+		if _accepts(building, item, incoming_side):
+			items.append(item)
+	return items
+
+
+func output_sides(building: Dictionary) -> Array[int]:
+	if building.kind == "delivery":
+		return []
+	if building.kind == "splitter":
+		return [int(building.facing), (int(building.facing) + 1) % 4]
+	return [int(building.facing)]
+
+
 func _receiver_queue(building: Dictionary) -> Array:
 	return building.input if not recipe_for(building).is_empty() else building.output
 
@@ -423,11 +439,9 @@ func _candidates(cell: Vector2i, building: Dictionary) -> Array:
 	if tick_count < int(building.next_transfer) or tick_count < int(building.output[0].ready):
 		return candidates
 	var item: String = building.output[0].item
-	var exits: Array[int] = [int(building.facing)]
-	if building.kind == "splitter":
-		exits = [int(building.facing), (int(building.facing) + 1) % 4]
-		if int(building.split_cursor) == 1:
-			exits.reverse()
+	var exits: Array[int] = output_sides(building)
+	if building.kind == "splitter" and int(building.split_cursor) == 1:
+		exits.reverse()
 	for direction: int in exits:
 		var target: Vector2i = cell + DIRECTIONS[direction]
 		var incoming: int = (direction + 2) % 4
