@@ -15,8 +15,8 @@ static func create(mode: String = "plate") -> Factory:
 	for entry: Dictionary in Factory.CATALOG.starter_layout:
 		model.place(entry.kind, entry.cell, entry.facing)
 	if mode != "plate":
-		model.remove(Vector2i(12, 7))
-		model.place("press", Vector2i(12, 7))
+		model.remove(Factory.CATALOG.conversion.cell)
+		model.place(Factory.CATALOG.conversion.kind, Factory.CATALOG.conversion.cell)
 	if expanded:
 		model.remove(Vector2i(3, 7))
 		model.place("splitter", Vector2i(3, 7))

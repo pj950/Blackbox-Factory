@@ -51,6 +51,9 @@ var feedback: Feedback
 var sound_button: Button
 var settings_path: String = "user://preferences.cfg"
 var plan_toggle: CheckButton
+var conversion_bar: HBoxContainer
+var conversion_label: Label
+var conversion_button: Button
 
 
 func _ready() -> void:
@@ -178,6 +181,15 @@ func _build_ui() -> void:
 	upgrade_button = _button("+4 power / 240", 12, "Buy the one-time power expansion from 10 to 14")
 	upgrade_button.pressed.connect(func() -> void: _dispatch({"action": "power_upgrade"}))
 	order_bar.add_child(upgrade_button)
+	conversion_bar = HBoxContainer.new()
+	layout.add_child(conversion_bar)
+	conversion_label = _label("", 14, Color("b8d5e2"))
+	conversion_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	conversion_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	conversion_bar.add_child(conversion_label)
+	conversion_button = _button("", 7, "Locate conversion target")
+	conversion_button.pressed.connect(_focus_conversion)
+	conversion_bar.add_child(conversion_button)
 	var body := HBoxContainer.new()
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	layout.add_child(body)
@@ -465,7 +477,83 @@ func _set_storage(index: int) -> void:
 	_dispatch({"action": "storage", "cell": selected, "item": ITEMS[index]})
 
 
+func conversion_state() -> Dictionary:
+	if not model.contracts_enabled or model.order_index != 1:
+		return {}
+	if not model.pending_commands.is_empty():
+		return {"stage": "queued", "text": "O2 / Pending commands", "tooltip": "The conversion state updates after queued commands execute."}
+	var target: Vector2i = Factory.CATALOG.conversion.cell
+	var source := Vector2i(-1, -1)
+	var delivery := Vector2i(-1, -1)
+	var expected_count: int = Factory.CATALOG.starter_layout.size() - (0 if model.cells.has(target) else 1)
+	var matches_layout: bool = model.cells.size() == expected_count
+	for entry: Dictionary in Factory.CATALOG.starter_layout:
+		if entry.kind == "source":
+			source = entry.cell
+		elif entry.kind == "delivery":
+			delivery = entry.cell
+		if entry.cell == target and not model.cells.has(target):
+			continue
+		if not model.cells.has(entry.cell):
+			matches_layout = false
+			continue
+		var building: Dictionary = model.cells[entry.cell]
+		var valid_kind: bool = building.kind == entry.kind or (entry.cell == target and building.kind == Factory.CATALOG.conversion.kind)
+		if not valid_kind or building.facing != entry.facing:
+			matches_layout = false
+	if not matches_layout:
+		return {"stage": "custom", "text": "O2 / Custom layout", "tooltip": "Fixed-cell conversion applies only to the starter line. Your layout remains unrestricted."}
+	if not model.order_active:
+		return {"stage": "accept", "text": "O2 / Awaiting contract", "tooltip": "Accept O2 before counting its new plate delivery."}
+	var plates_required: int = int(model.current_order().requirements.iron_plate)
+	if int(model.order_progress.iron_plate) < plates_required:
+		var early_press: bool = model.cells.has(target) and model.cells[target].kind == Factory.CATALOG.conversion.kind
+		return {"stage": "plates", "text": "O2 / Plates %d / %d%s" % [model.order_progress.iron_plate, plates_required, " / Press already installed" if early_press else ""], "cell": delivery, "tooltip": "O2 still needs direct plate deliveries. An inline press converts plates into components." if early_press else "Locate delivery. Complete O2's plate quota before converting this line."}
+	if model.cells.has(target) and model.cells[target].kind == Factory.CATALOG.conversion.kind:
+		if not model.cells[source].enabled:
+			return {"stage": "resume", "text": "O2 / Press installed / Supply off", "cell": source, "tooltip": "Locate the source to re-enable supply when ready."}
+		return {"stage": "production", "text": "O2 / Component line installed", "cell": target, "tooltip": "Inspect the press for actual input, power, progress and output. Installation alone does not guarantee production."}
+	if model.cells[source].enabled:
+		return {"stage": "stop", "text": "O2 / Plate quota met / Supply on", "cell": source, "tooltip": "Locate the source and disable supply before draining this line."}
+	var buffered: int = 0
+	var active_batches: int = 0
+	for cell: Vector2i in model.ordered_cells():
+		if cell == delivery:
+			continue
+		var building: Dictionary = model.cells[cell]
+		buffered += building.input.size() + building.output.size()
+		active_batches += 1 if building.active else 0
+	if buffered > 0 or active_batches > 0:
+		return {"stage": "drain", "text": "O2 / Draining: %d buffered / %d active batches" % [buffered, active_batches], "cell": target, "tooltip": "Keep the source off and run the line until existing materials drain. Check disabled or blocked machines if draining stalls."}
+	if model.cells.has(target):
+		return {"stage": "remove", "text": "O2 / Line empty / Belt refundable", "cell": target, "tooltip": "Locate the empty belt, then remove it before placing the press."}
+	var price: int = int(Factory.CATALOG.buildings[Factory.CATALOG.conversion.kind].price)
+	return {"stage": "build", "text": "O2 / Press site empty / Cost %d%s" % [price, " / Insufficient funds" if model.cash < price else ""], "cell": target, "build": true, "tooltip": "Select the press tool and its target. Placement remains manual and uses the normal purchase rules."}
+
+
+func _focus_conversion() -> void:
+	var state: Dictionary = conversion_state()
+	if not state.has("cell"):
+		return
+	selected = state.cell
+	if state.get("build", false):
+		build_facing = 0
+		_select_tool(Factory.CATALOG.conversion.kind)
+	else:
+		_select_tool("inspect")
+	_refresh()
+	sidebar.ensure_control_visible(build_buttons[Factory.CATALOG.conversion.kind] if state.get("build", false) else enabled_toggle)
+
+
 func _refresh() -> void:
+	var conversion: Dictionary = conversion_state()
+	conversion_bar.visible = not conversion.is_empty()
+	if not conversion.is_empty():
+		conversion_label.text = conversion.text
+		conversion_label.tooltip_text = conversion.tooltip
+		conversion_button.tooltip_text = conversion.tooltip
+		conversion_button.disabled = not conversion.has("cell")
+		conversion_button.icon = _icon(4 if conversion.get("build", false) else 7)
 	plan_toggle.visible = model.contracts_enabled and model.order_index == 0
 	sound_button.icon = _icon(16 if feedback.sound_enabled else 17)
 	sound_button.tooltip_text = "Sound on; click to mute" if feedback.sound_enabled else "Sound muted; click to enable"

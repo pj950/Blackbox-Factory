@@ -51,10 +51,57 @@ func _capture(main: Main, dimensions: Vector2i, filename: String) -> void:
 	expect(not main.board.get_global_rect().intersects(main.sidebar.get_global_rect()), "Board and sidebar do not overlap: " + filename)
 	expect(viewport_rect.encloses(main.order_bar.get_global_rect()), "Contract controls fit viewport: " + filename)
 	expect(not main.order_bar.get_global_rect().intersects(main.board.get_global_rect()), "Contract controls do not cover board: " + filename)
+	if main.conversion_bar.visible:
+		expect(viewport_rect.encloses(main.conversion_bar.get_global_rect()), "Conversion controls fit viewport: " + filename)
+		expect(not main.conversion_bar.get_global_rect().intersects(main.board.get_global_rect()), "Conversion controls do not cover board: " + filename)
 	var destination: String = ProjectSettings.globalize_path("res://../.tools/verification/" + filename)
 	DirAccess.make_dir_recursive_absolute(destination.get_base_dir())
 	expect(image.save_png(destination) == OK, "Save screenshot: " + filename)
 	print("Screenshot: " + destination)
+
+
+func _test_conversion_states(main: Main) -> void:
+	var original = main.model
+	var model = main.Fixtures.create("plate")
+	model.contracts_enabled = true
+	model.order_index = 1
+	model.order_active = true
+	main.model = model
+	model.order_progress.iron_plate = 12
+	expect(main.conversion_state().stage == "stop", "Plate quota with active supply requests supply inspection")
+	model.cells[Vector2i(2, 7)].enabled = false
+	model.cells[Vector2i(6, 7)].active = true
+	expect(main.conversion_state().stage == "drain", "An upstream in-progress batch blocks the empty-line stage")
+	model.cells[Vector2i(6, 7)].active = false
+	model.cells[Vector2i(3, 7)].output.append({"item": "iron_plate", "ready": 1})
+	expect(main.conversion_state().stage == "drain", "Upstream buffer blocks conversion even when the replacement belt is empty")
+	model.cells[Vector2i(3, 7)].output.clear()
+	model.cells[Vector2i(18, 7)].output.append({"item": "iron_plate", "ready": 1})
+	expect(main.conversion_state().stage == "remove", "Delivered surplus does not prevent draining the production line")
+	model.pending_commands.append({"action": "enabled", "cell": Vector2i(2, 7), "enabled": true})
+	expect(main.conversion_state().stage == "queued" and not main.conversion_state().has("cell"), "Pending commands suppress stale conversion targets")
+	model.pending_commands.clear()
+	model.place("belt", Vector2i.ZERO)
+	expect(main.conversion_state().stage == "custom" and not main.conversion_state().has("cell"), "Extra buildings suppress fixed-layout instructions")
+	model.remove(Vector2i.ZERO)
+	model.rotate(Vector2i(5, 7))
+	expect(main.conversion_state().stage == "custom", "Rotated belt prevents claiming the reference line is intact")
+	model.cells[Vector2i(5, 7)].facing = 0
+	model.remove(Vector2i(5, 7))
+	expect(main.conversion_state().stage == "custom", "Missing non-conversion segment is a custom layout")
+	model.place("belt", Vector2i(5, 7))
+	model.remove(Vector2i(12, 7))
+	model.place("press", Vector2i(12, 7))
+	model.order_progress.iron_plate = 0
+	expect(main.conversion_state().stage == "plates" and main.conversion_state().text.contains("already installed"), "Early press never skips unmet plate delivery")
+	model.order_progress.iron_plate = 12
+	model.remove(Vector2i(12, 7))
+	model.cash = 179
+	expect(main.conversion_state().stage == "build" and main.conversion_state().text.contains("Insufficient funds"), "Unaffordable press is disclosed without granting funds")
+	var unchanged: Dictionary = model.snapshot()
+	main.conversion_state()
+	expect(model.snapshot() == unchanged, "Conversion state calculation is read-only")
+	main.model = original
 
 
 func _run() -> void:
@@ -67,6 +114,7 @@ func _run() -> void:
 	for frame: int in range(4):
 		await process_frame
 	expect(main.model.cells.is_empty() and main.model.contracts_enabled and not main.running, "Scene starts with paused empty contract factory")
+	_test_conversion_states(main)
 	expect(not main.sink_toggle.visible and main.accept_button.visible, "Contract controls exclude test collector")
 	var empty_factory: Dictionary = main.model.snapshot()
 	expect(main.board.visible_plan().size() == 17 and main.plan_toggle.visible, "New contract exposes optional first-order layout")
@@ -189,12 +237,37 @@ func _run() -> void:
 	main._refresh()
 	expect(main.model.order_index == 1 and not main.accept_button.disabled, "Completed O1 unlocks O2 in UI")
 	expect(not main.plan_toggle.visible and main.board.visible_plan().is_empty(), "O1 completion retires the layout without affecting O2")
+	expect(main.conversion_state().stage == "accept" and main.conversion_button.disabled, "O2 conversion waits for accepting the new contract")
 	main.accept_button.pressed.emit()
+	expect(main.conversion_state().stage == "plates", "O2 conversion does not confuse prior O1 plates with the new quota")
+	var before_focus: Dictionary = main.model.snapshot()
+	main.conversion_button.pressed.emit()
+	expect(main.selected == Vector2i(18, 7) and main.model.snapshot() == before_focus, "Conversion locator selects delivery without mutating the factory")
 	main._dispatch({"action": "enabled", "cell": Vector2i(2, 7), "enabled": false})
 	main.model.advance(40.0)
-	main._dispatch({"action": "remove", "cell": Vector2i(12, 7)})
-	main._dispatch({"action": "place", "kind": "press", "cell": Vector2i(12, 7)})
-	main._dispatch({"action": "enabled", "cell": Vector2i(2, 7), "enabled": true})
+	main._refresh()
+	expect(main.conversion_state().stage == "remove", "Empty starter line exposes the refundable belt only after the plate quota")
+	main.save_button.pressed.emit()
+	main.load_dialog.confirmed.emit()
+	expect(main.conversion_state().stage == "remove" and not main.running, "Mid-conversion save/load derives the same safe replacement stage")
+	await _capture(main, Vector2i(1280, 800), "m3-conversion-desktop.png")
+	await _capture(main, Vector2i(960, 640), "m3-conversion-compact.png")
+	root.size = Vector2i(1280, 800)
+	for frame: int in range(4):
+		await process_frame
+	main.conversion_button.pressed.emit()
+	expect(main.selected == Vector2i(12, 7) and main.active_tool == "inspect", "Conversion locator targets the replacement belt")
+	main.remove_button.pressed.emit()
+	expect(main.conversion_state().stage == "build" and main.model.cash == 675, "Normal belt removal refunds five before the press purchase")
+	main.conversion_button.pressed.emit()
+	expect(main.active_tool == "press" and main.build_facing == 0 and main.model.cash == 675, "Press locator selects the tool but does not buy equipment")
+	for frame: int in range(4):
+		await process_frame
+	_click_board(main, Vector2i(12, 7))
+	expect(main.conversion_state().stage == "resume" and main.model.cash == 495, "Mouse purchase charges full press cost and retains supply off")
+	main.conversion_button.pressed.emit()
+	main.enabled_toggle.button_pressed = true
+	expect(main.conversion_state().stage == "production" and main.model.cells[Vector2i(2, 7)].enabled, "Player resumes supply using the existing source control")
 	main.model.advance(20.0)
 	_click_board(main, Vector2i(12, 7), MOUSE_BUTTON_RIGHT)
 	main._refresh()
@@ -214,6 +287,7 @@ func _run() -> void:
 	expect(main.model.tick_count != int(saved_state.tick), "Cancelling load keeps current factory")
 	main.load_dialog.confirmed.emit()
 	expect(main.model.snapshot() == saved_state and not main.running, "Confirmed load restores exact state and pauses")
+	expect(main.conversion_state().stage == "production", "Loaded component line derives its current conversion status")
 	main.model.advance(2.0)
 	main.save_button.pressed.emit()
 	var corrupt := FileAccess.open(main.save_path, FileAccess.WRITE)
@@ -235,6 +309,7 @@ func _run() -> void:
 	main.model.advance(80.0)
 	main._refresh()
 	expect(main.model.order_index == 2 and not main.accept_button.disabled, "O2 completion offers the final contract")
+	expect(main.conversion_state().is_empty() and not main.conversion_bar.visible, "O2 conversion assistance retires on O3")
 	main.accept_button.pressed.emit()
 	main.play_button.pressed.emit()
 	for tick: int in range(4000):

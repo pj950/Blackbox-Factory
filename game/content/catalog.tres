@@ -24,6 +24,7 @@ orders = Array[Dictionary]([
 ])
 power = {"capacity": 10, "upgrade_cost": 240, "upgrade_gain": 4}
 maintenance = {"wear_limit": 1200, "warning_at": 900, "repair_ticks": 100, "repair_cost": 40}
+conversion = {"cell": Vector2i(12, 7), "kind": "press"}
 starter_layout = Array[Dictionary]([
 {"kind": "source", "cell": Vector2i(2, 7), "facing": 0},
 {"kind": "smelter", "cell": Vector2i(6, 7), "facing": 0},
